@@ -652,6 +652,23 @@ int decode_utf8_char(const unsigned char *datap,
     return [self rangeOfString:trimmedURLString];
 }
 
+- (NSString *)stringByRemovingEnclosingBrackets {
+    int index;
+    for (index = 0; 2*index < self.length; index++) {
+      unichar start = [self characterAtIndex:index];
+      unichar end = [self characterAtIndex:self.length-index-1];
+      if (!((start == '(' && end == ')') ||
+            (start == '<' && end == '>') ||
+            (start == '[' && end == ']') ||
+            (start == '{' && end == '}') ||
+            (start == '\'' && end == '\'') ||
+            (start == '"' && end == '"'))) {
+          break;
+      }
+    }
+    return [self substringWithRange:NSMakeRange(index, self.length-2*index)];
+}
+
 - (NSString *)stringByRemovingTerminatingPunctuation {
     NSString *s = self;
     NSArray *punctuationMarks = @[ @"!", @"?", @".", @",", @";", @":", @"...", @"…" ];
@@ -1388,7 +1405,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
     return set;
 }
 
-- (BOOL)stringMatchesCaseInsensitiveGlobPattern:(NSString *)glob {
+- (BOOL)stringMatchesGlobPattern:(NSString *)glob caseSensitive:(BOOL)caseSensitive {
     NSArray *parts = [glob componentsSeparatedByString:@"*"];
     const BOOL anchorToStart = ![glob hasPrefix:@"*"];
 
@@ -1401,7 +1418,7 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
         assert(start <= self.length);
         NSRange searchRange = NSMakeRange(start, self.length - start);
         NSRange matchingRange = [self rangeOfString:part
-                                            options:NSCaseInsensitiveSearch
+                                            options:caseSensitive ? 0 : NSCaseInsensitiveSearch
                                               range:searchRange];
         if (matchingRange.location == NSNotFound) {
             return NO;
@@ -1449,6 +1466,72 @@ static TECObjectRef CreateTECConverterForUTF8Variants(TextEncodingVariant varian
         ull = 0;
     }
     return ull;
+}
+
+- (NSDictionary *)attributesUsingFont:(NSFont *)font fittingSize:(NSSize)maxSize attributes:(NSDictionary *)baseAttributes {
+    // Perform a binary search for the point size that best fits |maxSize|.
+    CGFloat min = 4;
+    CGFloat max = 100;
+    int points = (min + max) / 2;
+    int prevPoints = -1;
+    NSMutableDictionary *attributes = [[baseAttributes ?: @{} mutableCopy] autorelease];
+    while (points != prevPoints) {
+        attributes[NSFontAttributeName] = [NSFont fontWithName:font.fontName size:points];
+        NSRect boundingRect = [self boundingRectWithSize:NSMakeSize(CGFLOAT_MAX, CGFLOAT_MAX)
+                                                 options:NSStringDrawingUsesLineFragmentOrigin
+                                              attributes:attributes];
+        if (boundingRect.size.width > maxSize.width ||
+            boundingRect.size.height > maxSize.height) {
+            max = points;
+        } else if (boundingRect.size.width < maxSize.width &&
+                   boundingRect.size.height < maxSize.height) {
+            min = points;
+        }
+        prevPoints = points;
+        points = (min + max) / 2;
+    }
+
+    attributes[NSFontAttributeName] = [NSFont fontWithName:font.fontName size:points];
+    return attributes;
+}
+
+- (NSString *)stringByCompactingFloatingPointString {
+    if ([self rangeOfString:@"."].location == NSNotFound) {
+        // Bogus input. Don't even try.
+        return self;
+    }
+    NSString *compact = [self stringByTrimmingTrailingCharactersFromCharacterSet:[NSCharacterSet characterSetWithCharactersInString:@"0"]];
+    if ([compact hasSuffix:@"."]) {
+        compact = [compact stringByAppendingString:@"0"];
+    }
+    return compact;
+}
+
+// http://www.cse.yorku.ca/~oz/hash.html
+- (NSUInteger)hashWithDJB2 {
+    NSUInteger hash = 5381;
+    
+    for (NSUInteger i = 0; i < self.length; i++) {
+        unichar c = [self characterAtIndex:i];
+        hash = (hash * 33) ^ c;
+    }
+
+    return hash;
+}
+
+- (NSArray<NSNumber *> *)codePoints {
+    NSMutableArray<NSNumber *> *result = [NSMutableArray array];
+    for (NSUInteger i = 0; i < self.length; i++) {
+        unichar c = [self characterAtIndex:i];
+        if (IsHighSurrogate(c) && i + 1 < self.length) {
+            i++;
+            unichar c2 = [self characterAtIndex:i];
+            [result addObject:@(DecodeSurrogatePair(c, c2))];
+        } else if (!IsHighSurrogate(c) && !IsLowSurrogate(c)) {
+            [result addObject:@(c)];
+        }
+    }
+    return result;
 }
 
 @end

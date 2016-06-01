@@ -138,6 +138,7 @@ static void RollInHotkeyTerm(PseudoTerminal* term)
     PseudoTerminal* term = GetHotkeyWindow();
     [[term window] makeKeyAndOrderFront:nil];
     [[term window] makeFirstResponder:[[term currentSession] textview]];
+    [[[[HotkeyWindowController sharedInstance] hotKeyWindow] currentTab] recheckBlur];
 }
 
 - (Profile *)profile {
@@ -296,6 +297,7 @@ static void RollOutHotkeyTerm(PseudoTerminal* term, BOOL itermWasActiveWhenHotke
 
 - (void)storePreviouslyActiveApp {
     NSDictionary *activeAppDict = [[NSWorkspace sharedWorkspace] activeApplication];
+    HKWLog(@"Active app is %@", activeAppDict);
     if (![[activeAppDict objectForKey:@"NSApplicationBundleIdentifier"] isEqualToString:@"com.googlecode.iterm2"]) {
         self.previouslyActiveAppPID = activeAppDict[@"NSApplicationProcessIdentifier"];
     } else {
@@ -413,9 +415,14 @@ void OnHotKeyEvent(void)
             HKWLog(@"already have a hotkey window created");
             if ([[hotkeyTerm window] alphaValue] == 1) {
                 HKWLog(@"hotkey window opaque");
-                if (![[hotkeyTerm window] isOnActiveSpace] ||
-                    (![iTermPreferences boolForKey:kPreferenceKeyHotkeyAutoHides] &&
-                     ![[hotkeyTerm window] isKeyWindow])) {
+                const BOOL activateStickyHotkeyWindow = (![iTermPreferences boolForKey:kPreferenceKeyHotkeyAutoHides] &&
+                                                         ![[hotkeyTerm window] isKeyWindow]);
+                if (activateStickyHotkeyWindow && ![NSApp isActive]) {
+                    HKWLog(@"Storing previously active app");
+                    [[HotkeyWindowController sharedInstance] storePreviouslyActiveApp];
+                }
+                const BOOL hotkeyWindowOnOtherSpace = ![[hotkeyTerm window] isOnActiveSpace];
+                if (hotkeyWindowOnOtherSpace || activateStickyHotkeyWindow) {
                     DLog(@"Hotkey window is active on another space, or else it doesn't autohide but isn't key. Switch to it.");
                     [NSApp activateIgnoringOtherApps:YES];
                     [[hotkeyTerm window] makeKeyAndOrderFront:nil];
@@ -477,6 +484,15 @@ static BOOL UserIsActive() {
     return YES;
 }
 
+static BOOL ShouldRemap(BOOL disableRemapping, BOOL isDoNotRemap) {
+    if (disableRemapping) {
+        return NO;
+    } else {
+        // Remap unless bound action is DNR
+        return !isDoNotRemap;
+    }
+}
+
 /*
  * The callback is passed a proxy for the tap, the event type, the incoming event,
  * and the refcon the callback was registered with.
@@ -531,7 +547,7 @@ static CGEventRef OnTappedEvent(CGEventTapProxy proxy, CGEventType type, CGEvent
         unichar unmodunicode = [unmodkeystr length] > 0 ? [unmodkeystr characterAtIndex:0] : 0;
         unsigned int modflag = [cocoaEvent modifierFlags];
         NSString *keyBindingText;
-        BOOL tempDisabled = [shortcutView disableKeyRemapping];
+        BOOL disableRemapping = shortcutView.disableKeyRemapping;
 
         int action = [iTermKeyBindingMgr actionForKeyCode:unmodunicode
                                                 modifiers:modflag
@@ -548,8 +564,7 @@ static CGEventRef OnTappedEvent(CGEventTapProxy proxy, CGEventType type, CGEvent
             event = eventCopy;
             eventCopy = temp;
         }
-        if ((!tempDisabled && !isDoNotRemap) ||  // normal case, whether keysheet is open or not
-            (!tempDisabled && isDoNotRemap)) {  // about to change dnr to non-dnr
+        if (ShouldRemap(disableRemapping, isDoNotRemap)) {
             [iTermKeyBindingMgr remapModifiersInCGEvent:event];
             cocoaEvent = [NSEvent eventWithCGEvent:event];
         }
@@ -561,7 +576,7 @@ static CGEventRef OnTappedEvent(CGEventTapProxy proxy, CGEventType type, CGEvent
             eventCopy = temp;
         }
         CFRelease(eventCopy);
-        if (tempDisabled && !isDoNotRemap) {
+        if (disableRemapping) {
             callDirectly = YES;
         }
     } else {

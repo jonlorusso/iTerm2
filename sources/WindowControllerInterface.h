@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import "ProfileModel.h"
 #import "PTYTabDelegate.h"
+#import "PTYWindow.h"
 
 @class iTermPopupWindowController;
 @class PSMTabBarControl;
@@ -104,6 +105,7 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 // Underlying window
 - (NSWindow *)window;
+- (PTYWindow *)ptyWindow;
 
 // Unique identifier
 - (NSString *)terminalGuid;
@@ -216,6 +218,9 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 
 - (void)tabActiveSessionDidChange;
 
+// Returns the tab associated with a session.
+- (PTYTab *)tabForSession:(PTYSession *)session;
+
 #pragma mark - Sessions
 
 // Set the session name. If theSessionName is nil then set it to the pathname
@@ -295,7 +300,9 @@ typedef NS_ENUM(NSInteger, BroadcastMode) {
 - (void)toggleBroadcastingInputToSession:(PTYSession *)session;
 
 // Call writeTask: for each session's shell with the given data.
-- (void)sendInputToAllSessions:(NSData *)data;
+- (void)sendInputToAllSessions:(NSString *)string
+                      encoding:(NSStringEncoding)optionalEncoding
+                 forceEncoding:(BOOL)forceEncoding;
 
 #pragma mark - Tmux
 

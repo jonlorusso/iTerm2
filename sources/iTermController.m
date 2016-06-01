@@ -34,6 +34,7 @@
 #import "iTermAdvancedSettingsModel.h"
 #import "NSFileManager+iTerm.h"
 #import "NSStringITerm.h"
+#import "NSURL+iTerm.h"
 #import "NSView+RecursiveDescription.h"
 #import "PTYSession.h"
 #import "PTYTab.h"
@@ -48,6 +49,7 @@
 #import "iTermApplication.h"
 #import "iTermApplicationDelegate.h"
 #import "iTermExpose.h"
+#import "iTermFullScreenWindowManager.h"
 #import "iTermGrowlDelegate.h"
 #import "iTermKeyBindingMgr.h"
 #import "iTermPreferences.h"
@@ -71,6 +73,8 @@ static iTermController *gSharedInstance;
 
     NSMutableArray<PseudoTerminal *> *_terminalWindows;
     PseudoTerminal *_frontTerminalWindowController;
+    iTermFullScreenWindowManager *_fullScreenWindowManager;
+    BOOL _willPowerOff;
 }
 
 + (iTermController *)sharedInstance {
@@ -87,6 +91,22 @@ static iTermController *gSharedInstance;
     gSharedInstance = nil;
 }
 
++ (NSString *)installationId {
+    NSString *const kInstallationIdKey = @"NoSyncInstallationId";
+    NSString *installationId = [[NSUserDefaults standardUserDefaults] stringForKey:kInstallationIdKey];
+    if (!installationId) {
+        installationId = [NSString uuid];
+        [[NSUserDefaults standardUserDefaults] setObject:installationId forKey:kInstallationIdKey];
+    }
+    return installationId;
+}
+
++ (NSUInteger)shard {
+    static const NSUInteger kNumberOfShards = 100;
+    NSString *installationId = [iTermController installationId];
+    return [installationId hashWithDJB2] % kNumberOfShards;
+}
+
 - (instancetype)init {
     self = [super init];
 
@@ -99,9 +119,15 @@ static iTermController *gSharedInstance;
         _terminalWindows = [[NSMutableArray alloc] init];
         _restorableSessions = [[NSMutableArray alloc] init];
         _currentRestorableSessionsStack = [[NSMutableArray alloc] init];
-
+        _fullScreenWindowManager = [[iTermFullScreenWindowManager alloc] initWithClass:[PTYWindow class]
+                                                               enterFullScreenSelector:@selector(toggleFullScreen:)];
         // Activate Growl. This loads the Growl framework and initializes it.
         [iTermGrowlDelegate sharedInstance];
+        
+        [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                                                               selector:@selector(workspaceWillPowerOff:)
+                                                                   name:NSWorkspaceWillPowerOffNotification
+                                                                 object:nil];
     }
 
     return (self);
@@ -114,6 +140,10 @@ static iTermController *gSharedInstance;
 }
 
 - (BOOL)shouldLeaveSessionsRunningOnQuit {
+    if (_willPowerOff) {
+        // For issue 4147.
+        return NO;
+    }
     const BOOL sessionsWillRestore = ([iTermAdvancedSettingsModel runJobsInServers] &&
                                       [iTermAdvancedSettingsModel restoreWindowContents] &&
                                       self.willRestoreWindowsAtNextLaunch);
@@ -125,6 +155,7 @@ static iTermController *gSharedInstance;
 - (void)dealloc {
     // Save hotkey window arrangement to user defaults before closing it.
     [[HotkeyWindowController sharedInstance] saveHotkeyWindowState];
+    [[[NSWorkspace sharedWorkspace] notificationCenter] removeObserver:self];
 
     if (self.shouldLeaveSessionsRunningOnQuit) {
         // We don't want to kill running jobs. This can be for one of two reasons:
@@ -149,6 +180,7 @@ static iTermController *gSharedInstance;
 
     [_restorableSessions release];
     [_currentRestorableSessionsStack release];
+    [_fullScreenWindowManager release];
     [super dealloc];
 }
 
@@ -890,11 +922,17 @@ static iTermController *gSharedInstance;
     return aDict;
 }
 
-- (PseudoTerminal *)openWindowUsingProfile:(Profile *)profile {
+- (PseudoTerminal *)openTmuxIntegrationWindowUsingProfile:(Profile *)profile {
     [iTermController switchToSpaceInBookmark:profile];
+    iTermWindowType windowType;
+    if ([iTermAdvancedSettingsModel serializeOpeningMultipleFullScreenWindows]) {
+        windowType = [self windowTypeForBookmark:profile];
+    } else {
+        windowType = [iTermProfilePreferences intForKey:KEY_WINDOW_TYPE inProfile:profile];
+    }
     PseudoTerminal *term =
         [[[PseudoTerminal alloc] initWithSmartLayout:YES
-                                          windowType:[iTermProfilePreferences intForKey:KEY_WINDOW_TYPE inProfile:profile]
+                                          windowType:windowType
                                      savedWindowType:WINDOW_TYPE_NORMAL
                                               screen:[iTermProfilePreferences intForKey:KEY_SCREEN inProfile:profile]
                                             isHotkey:NO] autorelease];
@@ -903,6 +941,10 @@ static iTermController *gSharedInstance;
     }
     [self addTerminalWindow:term];
     return term;
+}
+
+- (void)makeTerminalWindowFullScreen:(NSWindowController<iTermWindowController> *)term {
+    [_fullScreenWindowManager makeWindowEnterFullScreen:term.ptyWindow];
 }
 
 - (PTYSession *)launchBookmark:(NSDictionary *)bookmarkData inTerminal:(PseudoTerminal *)theTerm {
@@ -1172,7 +1214,10 @@ static iTermController *gSharedInstance;
     NSString *appCast = checkForTestReleases ?
         [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SUFeedURLForTesting"] :
         [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SUFeedURLForFinal"];
-    [[NSUserDefaults standardUserDefaults] setObject:appCast forKey:@"SUFeedURL"];
+    NSURL *url = [NSURL URLWithString:appCast];
+    NSNumber *shard = @([iTermController shard]);
+    url = [url URLByAppendingQueryParameter:[NSString stringWithFormat:@"shard=%@", shard]];
+    [[NSUserDefaults standardUserDefaults] setObject:url.absoluteString forKey:@"SUFeedURL"];
     // Allow Sparkle to update from a zip file containing an "iTerm" directory,
     // even though our bundle name is now "iTerm2". I had to add this feature
     // to my fork of Sparkle so I could change the app's name without breaking
@@ -1339,6 +1384,10 @@ static iTermController *gSharedInstance;
 - (void)removeTerminalWindow:(PseudoTerminal *)terminalWindow {
     [_terminalWindows removeObject:terminalWindow];
     [self updateWindowTitles];
+}
+
+- (void)workspaceWillPowerOff:(NSNotification *)notification {
+    _willPowerOff = YES;
 }
 
 @end

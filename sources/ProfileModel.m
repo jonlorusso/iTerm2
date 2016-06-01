@@ -31,6 +31,7 @@
 #import "PreferencePanel.h"
 
 NSString *const kReloadAddressBookNotification = @"iTermReloadAddressBook";
+NSString *const kReloadAllProfiles = @"kReloadAllProfiles";
 
 id gAltOpenAllRepresentedObject;
 // Set to true if a bookmark was changed automatically due to migration to a new
@@ -709,8 +710,7 @@ int gMigrated;
     }
 }
 
-- (NSArray*)bookmarks
-{
+- (NSArray<Profile *> *)bookmarks {
     return bookmarks_;
 }
 

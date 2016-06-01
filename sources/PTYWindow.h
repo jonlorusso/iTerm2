@@ -27,14 +27,22 @@
 
 
 #import <Cocoa/Cocoa.h>
+#import "iTermWeakReference.h"
 
-@protocol PTYWindowDelegateProtocol<NSObject,NSWindowDelegate >
+@class PTYTab;
+@class PTYSession;
+
+@protocol PTYWindowDelegateProtocol<NSObject,NSWindowDelegate>
 - (BOOL)lionFullScreen;
+- (BOOL)anyFullScreen;
 - (void)windowWillShowInitial;
 - (void)toggleTraditionalFullScreenMode;
+
+// Returns the tab a session belongs to.
+- (PTYTab *)tabForSession:(PTYSession *)session;
 @end
 
-@interface PTYWindow : NSWindow
+@interface PTYWindow : NSWindow<iTermWeaklyReferenceable>
 
 @property(nonatomic, readonly) int screenNumber;
 @property(nonatomic, readonly, getter=isTogglingLionFullScreen) BOOL togglingLionFullScreen;
